@@ -1,7 +1,8 @@
+
 """
 obsidian_core.py
 -----------------
-cascadeflow-wrapped Groq handler + query category classifier.
+cascadeflow-wrapped Groq handler + query category classifier + routing policy.
 Used by main.py (FastAPI) for every POST /query request.
 
 Budget enforcement design
@@ -18,6 +19,13 @@ re-register it in the current async context. The budget accumulates across
 calls because it's the same object, and the enforce check fires correctly.
 
 To reset the budget mid-demo, call `reset_session()` or hit DELETE /session.
+
+Routing policy design
+----------------------
+- Per-category model assignments, stored in-memory with thread-safe access (using threading.Lock)
+- Default policy uses expensive model (qwen/qwen3-32b) for all categories
+- Cheaper fallback: llama-3.1-8b-instant
+- sensitive_data is permanently locked to default expensive model and cannot be downgraded, per governance guardrail
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ import cascadeflow
 from cascadeflow.harness.api import HarnessRunContext, _current_run, run as _cf_run
 from cascadeflow.schema.exceptions import BudgetExceededError, HarnessStopError
 from openai import OpenAI
+from typing import Literal, TypedDict
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,13 +51,35 @@ _groq_client = OpenAI(
 # ── cascadeflow: enforce mode ─────────────────────────────────────────────────
 cascadeflow.init(mode="enforce")
 
-MODEL = "qwen/qwen3-32b"
-DEMO_BUDGET = float(os.getenv("DEMO_BUDGET", "0.02"))
+# Model definitions (valid Groq model names)
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+CHEAP_FALLBACK_MODEL = "llama-3.1-8b-instant"
+CATEGORIES = Literal["order_status", "refund", "sensitive_data", "general_faq"]
+# Increased budget to $1.00 for testing/demo purposes!
+DEMO_BUDGET = float(os.getenv("DEMO_BUDGET", "1.00"))
 
 # ── Persistent HarnessRunContext ──────────────────────────────────────────────
 _session_lock = threading.Lock()
 _active_ctx: HarnessRunContext | None = None
 _session_cm: object | None = None   # the cascadeflow.run() context manager
+
+# ── Routing Policy ────────────────────────────────────────────────────────────
+_routing_lock = threading.Lock()
+# Default policy: use DEFAULT_MODEL for everything
+_DEFAULT_POLICY: dict[CATEGORIES, str] = {
+    "order_status": DEFAULT_MODEL,
+    "refund": DEFAULT_MODEL,
+    "sensitive_data": DEFAULT_MODEL,
+    "general_faq": DEFAULT_MODEL,
+}
+_routing_policy: dict[CATEGORIES, str] = _DEFAULT_POLICY.copy()
+
+
+class RoutingPolicyChange(TypedDict):
+    category: CATEGORIES
+    old_model: str
+    new_model: str
+    reason: str
 
 
 def _make_ctx() -> HarnessRunContext:
@@ -68,8 +99,8 @@ def _ensure_session() -> HarnessRunContext:
 
 
 def reset_session() -> dict:
-    """Close the current session and start a fresh one. Returns the old summary."""
-    global _active_ctx, _session_cm
+    """Close the current session and start a fresh one. Returns the old summary. Also resets routing policy to defaults."""
+    global _active_ctx, _session_cm, _routing_policy
     with _session_lock:
         old_summary: dict = {}
         if _active_ctx is not None:
@@ -83,7 +114,47 @@ def reset_session() -> dict:
             except Exception:
                 pass
         _active_ctx, _session_cm = _make_ctx()
+    # Also reset routing policy
+    with _routing_lock:
+        _routing_policy = _DEFAULT_POLICY.copy()
     return old_summary
+
+
+def get_routing_policy() -> dict[CATEGORIES, str]:
+    """Return the current routing policy (thread-safe)."""
+    with _routing_lock:
+        return _routing_policy.copy()
+
+
+def apply_routing_fix(suggestion: dict) -> tuple[bool, str, RoutingPolicyChange | None]:
+    """
+    Apply a routing fix from a structured suggestion.
+    Returns (success: bool, message: str, change: RoutingPolicyChange | None)
+    """
+    with _routing_lock:
+        # Extract category from structured suggestion
+        category: CATEGORIES | None = suggestion.get("category")
+        if category not in _DEFAULT_POLICY:
+            return False, "No valid category in structured suggestion", None
+        
+        # Governance guardrail: never downgrade sensitive_data
+        if category == "sensitive_data":
+            return False, "Governance guardrail: sensitive_data queries may not be automatically downgraded", None
+        
+        old_model = _routing_policy[category]
+        # Check if it's already using the cheap model
+        if old_model == CHEAP_FALLBACK_MODEL:
+            return False, "No change needed: already using cheaper model", None
+        
+        # Apply the fix
+        _routing_policy[category] = CHEAP_FALLBACK_MODEL
+        change = RoutingPolicyChange(
+            category=category,
+            old_model=old_model,
+            new_model=CHEAP_FALLBACK_MODEL,
+            reason=f"Cost escalation detected: {suggestion.get('escalation_rate', 'unknown')} escalation rate"
+        )
+        return True, "Routing fix applied successfully", change
 
 
 # ── Category classifier ───────────────────────────────────────────────────────
@@ -105,18 +176,25 @@ def classify_category(query: str) -> str:
 
 
 # ── cascadeflow agent decorator ───────────────────────────────────────────────
-@cascadeflow.harness_agent(
-    budget=DEMO_BUDGET,
-    compliance="gdpr",
-    kpi_weights={"quality": 0.6, "cost": 0.3, "latency": 0.1},
-)
-def _handle_query(query: str) -> str:
-    """Inner LLM call — instrumented by cascadeflow."""
-    resp = _groq_client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": query}],
+# We need a way to pass model dynamically. Let's modify approach!
+# Wait: cascadeflow.harness_agent decorator binds to the model at definition time?
+# Oh, maybe better to handle model selection inside the function and use cascadeflow with variable model?
+# Wait, let's check: the original _handle_query uses MODEL directly. Let's adjust to make it use a parameter.
+
+# Let's rewrite this part to allow dynamic model
+def _create_handle_query(model: str):
+    @cascadeflow.harness_agent(
+        budget=DEMO_BUDGET,
+        compliance="gdpr",
+        kpi_weights={"quality": 0.6, "cost": 0.3, "latency": 0.1},
     )
-    return resp.choices[0].message.content
+    def _inner_handle_query(query: str) -> str:
+        resp = _groq_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": query}],
+        )
+        return resp.choices[0].message.content
+    return _inner_handle_query
 
 
 def run_query(query: str) -> tuple[str, list[dict], dict]:
@@ -132,8 +210,15 @@ def run_query(query: str) -> tuple[str, list[dict], dict]:
     # Re-register the persistent context in the current async task's ContextVar
     _current_run.set(ctx)
 
+    # Classify query and get model from routing policy
+    category = classify_category(query)
+    with _routing_lock:
+        model = _routing_policy[category]
+
     try:
-        answer = _handle_query(query)
+        # Create the handle_query function with the correct model and run it
+        handle_query = _create_handle_query(model)
+        answer = handle_query(query)
     except BudgetExceededError as exc:
         answer = (
             f"[BUDGET STOP] ${abs(getattr(exc, 'remaining', 0)):.4f} over the "

@@ -70,6 +70,9 @@ def _get_hindsight():
 _event_store: dict[str, list[dict]] = collections.defaultdict(list)
 _total_event_count: int = 0
 
+# ── Policy change events (stored separately for now, or in _event_store with special category)
+POLICY_CHANGE_CATEGORY = "__policy_change__"
+
 
 def _build_memory_text(category: str, audit_event: dict) -> str:
     """Build a rich, category-keyed text summary for Hindsight retain().
@@ -123,6 +126,33 @@ async def store_event(category: str, audit_event: dict) -> None:
             logger.warning("Hindsight aretain failed (continuing): %s", exc)
 
 
+async def store_policy_change_event(change: dict) -> None:
+    """Store a policy change event in the audit trail."""
+    global _total_event_count
+    timestamp_ms = time.time() * 1000
+    audit_event = {
+        "action": "policy_change",
+        "model": None,
+        "cost_total": 0.0,
+        "latency_used_ms": 0.0,
+        "decision_mode": "governance",
+        "timestamp_ms": timestamp_ms,
+        "run_id": "policy_change",
+        "step": 0,
+        "reason": change["reason"],
+        "query": None,
+        "old_model": change["old_model"],
+        "new_model": change["new_model"],
+        "affected_category": change["category"],
+    }
+    record = {
+        "timestamp_ms": timestamp_ms,
+        "category": POLICY_CHANGE_CATEGORY,
+        "audit_event": audit_event,
+    }
+    _event_store[POLICY_CHANGE_CATEGORY].append(record)
+    _total_event_count += 1
+
 def get_all_events() -> list[dict]:
     """Return all stored events sorted ascending by timestamp_ms."""
     all_events: list[dict] = []
@@ -154,7 +184,9 @@ async def check_escalation_pattern() -> Optional[dict]:
     # In-memory heuristic
     suggestions: list[dict] = []
     for category, events in _event_store.items():
-        if len(events) < 2:
+        # Exclude internal policy-change pseudo-category from pattern detection
+        # This avoids skewing cost/escalation calculations with our own audit events
+        if category == POLICY_CHANGE_CATEGORY or len(events) < 2:
             continue
         expensive = sum(
             1 for e in events

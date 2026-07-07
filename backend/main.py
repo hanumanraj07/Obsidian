@@ -1,11 +1,15 @@
+
 """
 main.py — Obsidian FastAPI Backend
 ------------------------------------
 Endpoints:
-  POST   /query    → run a query through cascadeflow+Groq, store audit event
-  GET    /events   → full event history sorted by timestamp (for dashboard)
-  GET    /insights → Hindsight-powered routing suggestion (on demand)
-  DELETE /session  → reset the cascadeflow budget session for a fresh demo run
+  POST   /query               → Run a customer support query through Obsidian
+  GET    /events              → Full audit event history sorted by timestamp
+  GET    /insights            → Hindsight-powered routing insights (latest suggestion)
+  DELETE /session             → Reset budget AND routing policy to defaults
+  GET    /routing-policy      → Get current per-category routing policy
+  POST   /apply-suggestion    → (MAIN) Apply latest available suggestion (UI uses this)
+  POST   /apply-routing-fix   → (LEGACY) Apply explicit suggestion (kept for compatibility)
 
 Start:
   $env:GROQ_API_KEY = "gsk_..."
@@ -26,12 +30,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from obsidian_core import classify_category, reset_session, run_query
+from obsidian_core import classify_category, reset_session, run_query, get_routing_policy, apply_routing_fix
 from hindsight_store import (
     check_escalation_pattern,
     get_all_events,
     get_insights,
     store_event,
+    store_policy_change_event,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -48,7 +53,7 @@ app = FastAPI(
         "AI decision audit and cost governance backend. "
         "Every query is routed through cascadeflow (enforce mode) and logged."
     ),
-    version="0.2.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -95,34 +100,51 @@ class InsightsResponse(BaseModel):
     routing_suggestion: Optional[dict[str, Any]]
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+class RoutingPolicyResponse(BaseModel):
+    policy: dict[str, str]
 
+
+class ApplyRoutingFixRequest(BaseModel):
+    suggestion: dict[str, Any]
+
+
+class ApplyRoutingFixResponse(BaseModel):
+    success: bool
+    message: str
+    change: Optional[dict[str, Any]]
+
+
+# ── Shared internal apply logic (single source of truth) ─────────────────────
+async def _internal_apply_suggestion(suggestion: Optional[dict]) -> ApplyRoutingFixResponse:
+    if not suggestion:
+        return ApplyRoutingFixResponse(
+            success=False,
+            message="No actionable suggestion available yet",
+            change=None,
+        )
+    success, message, change = apply_routing_fix(suggestion)
+    if success and change:
+        await store_policy_change_event(change)
+    return ApplyRoutingFixResponse(
+        success=success,
+        message=message,
+        change=change,
+    )
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 @app.post("/query", response_model=QueryResponse, summary="Run a customer support query through Obsidian")
 async def query_endpoint(body: QueryRequest) -> QueryResponse:
-    """
-    Route `body.query` through cascadeflow enforce mode → Groq → audit trail.
-
-    **Budget enforcement:** The cascadeflow session is persistent across calls.
-    Once the $0.02 cumulative budget is exhausted, `blocked=true` and
-    `audit_event.action="stop"` / `reason="budget_exceeded"` are returned.
-    Use `DELETE /session` to reset the budget for a new demo run.
-
-    **Compliance gating:** Sensitive queries may trigger `action="switch_model"`
-    (routed to a compliant model) or `action="stop"` (no approved model found).
-    """
     if not body.query.strip():
         raise HTTPException(status_code=422, detail="query must not be empty")
 
     logger.info("Received query: %r", body.query[:80])
 
-    # 1. Classify
     category = classify_category(body.query)
     logger.info("Category: %s", category)
 
-    # 2. Run through cascadeflow + Groq (persistent session accumulates cost)
     answer, trace_events, summary = run_query(body.query)
 
-    # 3. Pick the most recent trace event for this call
     audit_event: dict[str, Any] = trace_events[-1] if trace_events else {
         "action": "unknown",
         "model": None,
@@ -136,13 +158,11 @@ async def query_endpoint(body: QueryRequest) -> QueryResponse:
         "query": body.query,
     }
 
-    # Determine if the query was blocked (stop or deny_tool)
     blocked = audit_event.get("action") in ("stop", "deny_tool")
 
-    # 4. Store in Hindsight (or in-memory fallback)
     await store_event(category, audit_event)
 
-    # 5. Check escalation pattern (every 10 events)
+    # Only detect patterns, NO AUTO-APPLY!
     routing_suggestion = await check_escalation_pattern()
 
     logger.info(
@@ -166,7 +186,6 @@ async def query_endpoint(body: QueryRequest) -> QueryResponse:
 
 @app.get("/events", response_model=EventsResponse, summary="Full audit event history for the dashboard")
 async def events_endpoint() -> EventsResponse:
-    """Return all stored audit events sorted ascending by timestamp_ms."""
     events = get_all_events()
     return EventsResponse(
         total=len(events),
@@ -176,15 +195,6 @@ async def events_endpoint() -> EventsResponse:
 
 @app.get("/insights", response_model=InsightsResponse, summary="Hindsight-powered routing insights")
 async def insights_endpoint() -> InsightsResponse:
-    """
-    Query Hindsight memory for pattern-based routing insights.
-
-    - **recall**: which category is escalated to expensive models most often
-    - **reflect**: suggested routing rule to reduce cost
-    - **routing_suggestion**: structured suggestion dict (same format as in /query)
-
-    Falls back gracefully if Hindsight is not running (USE_HINDSIGHT=false).
-    """
     recall_text, reflect_text, suggestion = await get_insights()
     return InsightsResponse(
         recall=recall_text,
@@ -193,21 +203,33 @@ async def insights_endpoint() -> InsightsResponse:
     )
 
 
-@app.delete("/session", response_model=SessionResetResponse, summary="Reset budget session for a fresh demo run")
+@app.delete("/session", response_model=SessionResetResponse, summary="Reset budget session AND routing policy")
 async def reset_session_endpoint() -> SessionResetResponse:
-    """
-    Close the current cascadeflow session (clears accumulated cost/budget)
-    and start a fresh one with the full $DEMO_BUDGET.
-
-    Use this between hackathon demo runs so judges see the budget enforcement
-    from scratch each time.
-    """
     previous = reset_session()
     logger.info("Session reset. Previous cost: %.5f", previous.get("cost", 0))
     return SessionResetResponse(
-        message="Budget session reset. New $0.02 cap is active.",
+        message="Budget session AND routing policy reset. New $0.02 cap and default routing active.",
         previous_summary=previous,
     )
+
+
+@app.get("/routing-policy", response_model=RoutingPolicyResponse, summary="Get current per-category routing policy")
+async def routing_policy_endpoint() -> RoutingPolicyResponse:
+    policy = get_routing_policy()
+    return RoutingPolicyResponse(policy=policy)
+
+
+@app.post("/apply-suggestion", response_model=ApplyRoutingFixResponse, summary="(MAIN ENDPOINT) Apply latest suggestion")
+async def apply_suggestion_endpoint() -> ApplyRoutingFixResponse:
+    logger.info("Received request to apply latest suggestion")
+    _, _, suggestion = await get_insights()
+    return await _internal_apply_suggestion(suggestion)
+
+
+@app.post("/apply-routing-fix", response_model=ApplyRoutingFixResponse, summary="(LEGACY) Apply explicit suggestion")
+async def apply_routing_fix_endpoint(body: ApplyRoutingFixRequest) -> ApplyRoutingFixResponse:
+    logger.info("Received legacy apply-routing-fix request")
+    return await _internal_apply_suggestion(body.suggestion)
 
 
 @app.get("/health", include_in_schema=False)
