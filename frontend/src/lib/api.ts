@@ -59,3 +59,13 @@ export async function deleteSession(): Promise<void> {
   const res = await fetch(`${API_URL}/session`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to reset session");
 }
+
+export async function postAsk(question: string): Promise<{ answer: string }> {
+  const res = await fetch(`${API_URL}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!res.ok) throw new Error("Failed to ask Obsidian");
+  return res.json();
+}

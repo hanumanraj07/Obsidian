@@ -6,6 +6,7 @@ Endpoints:
   GET    /events   → full event history sorted by timestamp (for dashboard)
   GET    /insights → Hindsight-powered routing suggestion (on demand)
   DELETE /session  → reset the cascadeflow budget session for a fresh demo run
+  POST   /ask      → natural-language query over the audit event history (Ask Obsidian)
 
 Start:
   $env:GROQ_API_KEY = "gsk_..."
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 
 from obsidian_core import classify_category, reset_session, run_query
 from hindsight_store import (
+    ask_hindsight,
     check_escalation_pattern,
     get_all_events,
     get_insights,
@@ -93,6 +95,14 @@ class InsightsResponse(BaseModel):
     recall: Optional[str]
     reflect: Optional[str]
     routing_suggestion: Optional[dict[str, Any]]
+
+
+class AskRequest(BaseModel):
+    question: str
+
+
+class AskResponse(BaseModel):
+    answer: str
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -208,6 +218,26 @@ async def reset_session_endpoint() -> SessionResetResponse:
         message="Budget session reset. New $0.02 cap is active.",
         previous_summary=previous,
     )
+
+
+@app.post("/ask", response_model=AskResponse, summary="Ask Obsidian a natural-language question about the audit history")
+async def ask_endpoint(body: AskRequest) -> AskResponse:
+    """
+    Ask a natural-language question about the audit event history.
+
+    Powered by Hindsight's areflect — synthesises answers from stored audit
+    memory. Works even if USE_HINDSIGHT=false (returns a fallback message).
+
+    Example questions:
+    - "Why did query #14 cost more than usual?"
+    - "What would happen if I lowered the budget to $0.01?"
+    - "Which category causes the most budget burn?"
+    """
+    if not body.question.strip():
+        raise HTTPException(status_code=422, detail="question must not be empty")
+    logger.info("Ask Obsidian: %r", body.question[:120])
+    answer = await ask_hindsight(body.question)
+    return AskResponse(answer=answer)
 
 
 @app.get("/health", include_in_schema=False)

@@ -12,7 +12,7 @@ import {
   ReferenceLine
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
-import { getEvents, getInsights, postQuery, deleteSession, type EventRecord, type AuditEvent } from "@/lib/api";
+import { getEvents, getInsights, postQuery, deleteSession, postAsk, type EventRecord, type AuditEvent } from "@/lib/api";
 
 // Utility functions for formatting
 const formatLatency = (ms: number): string => {
@@ -37,6 +37,13 @@ export default function Home() {
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const sessionStartRef = useRef<number>(Date.now());
   const [uptime, setUptime] = useState<string>("00:00");
+
+  // Ask Obsidian chat state
+  type ChatMessage = { role: "user" | "assistant"; text: string };
+  const [askMessages, setAskMessages] = useState<ChatMessage[]>([]);
+  const [askInput, setAskInput] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // Update uptime
   useEffect(() => {
@@ -94,6 +101,23 @@ export default function Home() {
       setQueryResponse("Session reset successfully!");
     } catch (err) {
       setQueryResponse("Error resetting session");
+    }
+  };
+
+  const handleAsk = async (overrideQuestion?: string) => {
+    const question = (overrideQuestion ?? askInput).trim();
+    if (!question || askLoading) return;
+    setAskInput("");
+    setAskMessages(prev => [...prev, { role: "user", text: question }]);
+    setAskLoading(true);
+    try {
+      const res = await postAsk(question);
+      setAskMessages(prev => [...prev, { role: "assistant", text: res.answer }]);
+    } catch {
+      setAskMessages(prev => [...prev, { role: "assistant", text: "⚠️ Could not reach Obsidian backend." }]);
+    } finally {
+      setAskLoading(false);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     }
   };
 
@@ -379,6 +403,119 @@ export default function Home() {
                 Awaiting pattern — {Math.max(0, 10 - eventRecords.length)} more queries until next check
               </div>
             )}
+          </section>
+
+          {/* Ask Obsidian Chat Panel */}
+          <section className="border border-violet-500/20 rounded-md overflow-hidden bg-violet-950/10">
+            <div className="px-5 py-4 border-b border-violet-500/15 flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-violet-400 animate-pulse" />
+              <h2 className="text-violet-300 text-sm font-semibold tracking-widest uppercase">Ask Obsidian</h2>
+              <span className="ml-auto text-xs text-slate-600 font-mono-data">AI · powered by Hindsight</span>
+            </div>
+
+            {/* Chat messages */}
+            <div className="max-h-72 overflow-y-auto px-5 py-4 space-y-4 flex flex-col">
+              {askMessages.length === 0 && (
+                <div className="text-center py-4">
+                  <p className="text-slate-500 text-xs mb-4 font-mono-data">Ask anything about the audit history:</p>
+                  <div className="flex flex-col gap-2">
+                    {[
+                      "Which category burns the most budget?",
+                      "Why are some queries more expensive?",
+                      "What would happen if budget was $0.01?"
+                    ].map(suggestion => (
+                      <button
+                        key={suggestion}
+                        onClick={() => handleAsk(suggestion)}
+                        className="text-left text-xs text-violet-400/70 hover:text-violet-300 border border-violet-500/15 hover:border-violet-500/40 rounded px-3 py-2 transition-all font-mono-data"
+                      >
+                        ↗ {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <AnimatePresence initial={false}>
+                {askMessages.map((msg, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className={`flex gap-2 ${
+                      msg.role === "user" ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    {msg.role === "assistant" && (
+                      <div className="w-5 h-5 rounded-full bg-violet-600 flex items-center justify-center text-white text-[10px] shrink-0 mt-0.5">
+                        ◆
+                      </div>
+                    )}
+                    <div
+                      className={`max-w-[85%] text-xs leading-relaxed rounded px-3 py-2 font-mono-data ${
+                        msg.role === "user"
+                          ? "bg-slate-800 text-slate-200 rounded-tr-none"
+                          : "bg-violet-950/60 text-slate-300 border border-violet-500/20 rounded-tl-none"
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
+                    {msg.role === "user" && (
+                      <div className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-slate-400 text-[10px] shrink-0 mt-0.5">
+                        ↑
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+
+              {askLoading && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex gap-2 justify-start"
+                >
+                  <div className="w-5 h-5 rounded-full bg-violet-600 flex items-center justify-center text-white text-[10px] shrink-0 mt-0.5">
+                    ◆
+                  </div>
+                  <div className="bg-violet-950/60 border border-violet-500/20 rounded rounded-tl-none px-3 py-2 flex gap-1 items-center">
+                    {[0, 1, 2].map(d => (
+                      <motion.span
+                        key={d}
+                        className="w-1 h-1 rounded-full bg-violet-400"
+                        animate={{ opacity: [0.3, 1, 0.3] }}
+                        transition={{ duration: 1, repeat: Infinity, delay: d * 0.2 }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input row */}
+            <div className="px-5 py-3 border-t border-violet-500/15 flex gap-3 items-center">
+              <input
+                id="ask-obsidian-input"
+                type="text"
+                value={askInput}
+                onChange={e => setAskInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleAsk()}
+                placeholder="Ask about cost, decisions, patterns…"
+                disabled={askLoading}
+                className="flex-1 bg-transparent border-none text-slate-200 placeholder-slate-600 font-mono-data text-xs focus:outline-none focus:ring-0 disabled:opacity-40"
+              />
+              <button
+                id="ask-obsidian-send"
+                onClick={() => handleAsk()}
+                disabled={askLoading || !askInput.trim()}
+                className="px-3 py-1.5 rounded-sm bg-violet-600/30 text-violet-300 text-xs font-mono-data font-medium hover:bg-violet-600/50 transition-colors disabled:opacity-30"
+              >
+                ASK
+              </button>
+            </div>
           </section>
         </div>
       </div>
