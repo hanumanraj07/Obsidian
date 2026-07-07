@@ -24,10 +24,14 @@ from __future__ import annotations
 
 import os
 import threading
+from dotenv import load_dotenv
 import cascadeflow
 from cascadeflow.harness.api import HarnessRunContext, _current_run, run as _cf_run
 from cascadeflow.schema.exceptions import BudgetExceededError, HarnessStopError
 from openai import OpenAI
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ── Groq client (OpenAI-compatible) ──────────────────────────────────────────
 _groq_client = OpenAI(

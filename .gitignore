@@ -1,28 +1,17 @@
-# Python
+
+# Virtual environment
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/
 
-# Environment / secrets
-.env
-.env.*
-*.key
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Generated data outputs (contain real query data / costs)
-events.json
-insights.json
-
-# IDE & OS
+# IDE
 .vscode/
 .idea/
-*.DS_Store
+
+# OS files
+.DS_Store
 Thumbs.db
+
+# Backend
+backend/__pycache__/
+*.pyc
