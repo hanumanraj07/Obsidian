@@ -288,3 +288,122 @@ async def get_insights() -> tuple[Optional[str], Optional[str], Optional[dict]]:
     except Exception as exc:
         logger.warning("Hindsight get_insights failed: %s", exc)
         return None, None, None
+
+
+async def ask_hindsight(query: str) -> str:
+    """
+    Query the audit history with a natural language question.
+
+    Primary path  — USE_HINDSIGHT=true + Docker running:
+        Uses Hindsight areflect (semantic memory over all stored facts).
+
+    Fallback path — USE_HINDSIGHT=false OR Docker unreachable:
+        Builds a structured summary of the in-memory _event_store and sends it
+        to Groq directly so the user always gets a useful answer.
+    """
+    # ── Try Hindsight first (only if configured) ──────────────────────────────
+    if USE_HINDSIGHT:
+        try:
+            client = _get_hindsight()
+            reflect_result = await client.areflect(
+                bank_id=HINDSIGHT_BANK_ID,
+                query=query,
+            )
+            if reflect_result is not None:
+                text = getattr(reflect_result, "text", None) or str(reflect_result)
+                if text and text.startswith("text="):
+                    text = text[5:].strip('"')
+                return text
+        except Exception as exc:
+            logger.warning(
+                "Hindsight unavailable (%s) — falling back to Groq in-memory analysis.", exc
+            )
+
+    # ── Groq fallback: synthesise from in-memory events ───────────────────────
+    return await _ask_groq_with_context(query)
+
+
+async def _ask_groq_with_context(query: str) -> str:
+    """Answer a question using Groq with a structured summary of in-memory events."""
+    import os
+    from openai import OpenAI
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    all_events = get_all_events()
+    if not all_events:
+        return (
+            "No audit events are in memory yet. Send some queries via the Live Query box "
+            "and then ask me again — I'll have real data to reason about."
+        )
+
+    # Build a compact, structured context from up to 50 most-recent events
+    lines: list[str] = [
+        f"Total events in history: {len(all_events)}",
+        "",
+        "Recent audit events (most recent last):",
+    ]
+    for i, rec in enumerate(all_events[-50:], start=1):
+        ae = rec.get("audit_event", {})
+        bs = ae.get("budget_state") or {}
+        lines.append(
+            f"  [{i}] category={rec.get('category', '?')}"
+            f"  action={ae.get('action', '?')}"
+            f"  model={ae.get('model', '?')}"
+            f"  cost=${ae.get('cost_total', 0):.5f}"
+            f"  latency={ae.get('latency_used_ms', 0):.0f}ms"
+            f"  budget_remaining=${bs.get('remaining', '?')}"
+        )
+
+    # Per-category summary
+    from collections import defaultdict
+    cat_stats: dict[str, dict] = defaultdict(lambda: {"count": 0, "total_cost": 0.0, "blocked": 0})
+    for rec in all_events:
+        ae = rec.get("audit_event", {})
+        cat = rec.get("category", "unknown")
+        cat_stats[cat]["count"] += 1
+        cat_stats[cat]["total_cost"] += ae.get("cost_total", 0.0)
+        if ae.get("action") in ("stop", "deny_tool"):
+            cat_stats[cat]["blocked"] += 1
+
+    lines.append("")
+    lines.append("Per-category summary:")
+    for cat, s in sorted(cat_stats.items(), key=lambda x: -x[1]["total_cost"]):
+        avg = s["total_cost"] / s["count"] if s["count"] else 0
+        lines.append(
+            f"  {cat}: {s['count']} queries, "
+            f"total=${s['total_cost']:.5f}, avg=${avg:.5f}/query, "
+            f"blocked={s['blocked']}"
+        )
+
+    context = "\n".join(lines)
+
+    groq_client = OpenAI(
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url="https://api.groq.com/openai/v1",
+    )
+
+    system_prompt = (
+        "You are Obsidian, an AI agent governance and cost audit assistant. "
+        "You have access to a structured audit log of all LLM queries that have passed through "
+        "the Obsidian governance engine. Answer the user's question concisely and insightfully "
+        "using only the data provided. Be specific — reference actual costs, categories, and counts. "
+        "If the question is hypothetical (e.g. 'what if budget was $0.01?'), reason carefully based on "
+        "the data. Keep your answer under 150 words."
+    )
+
+    try:
+        resp = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Audit data:\n{context}\n\nQuestion: {query}"},
+            ],
+            max_tokens=300,
+        )
+        return resp.choices[0].message.content or "No answer generated."
+    except Exception as exc:
+        logger.warning("Groq fallback ask failed: %s", exc)
+        return f"Could not generate an answer: {exc}"
+

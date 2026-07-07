@@ -55,6 +55,13 @@ export default function Home() {
   const sessionStartRef = useRef<number>(Date.now());
   const [uptime, setUptime] = useState<string>("00:00");
 
+  // Ask Obsidian chat state
+  type ChatMessage = { role: "user" | "assistant"; text: string };
+  const [askMessages, setAskMessages] = useState<ChatMessage[]>([]);
+  const [askInput, setAskInput] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
   // Update uptime
   useEffect(() => {
     const interval = setInterval(() => {

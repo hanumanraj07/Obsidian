@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from obsidian_core import classify_category, reset_session, run_query, get_routing_policy, apply_routing_fix
 from hindsight_store import (
+    ask_hindsight,
     check_escalation_pattern,
     get_all_events,
     get_insights,
