@@ -45,3 +45,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 2026-07-09 20:17:12,239 [INFO] obsidian: Autonomous fix detected — applying routing suggestion for category: order_status
 2026-07-09 20:17:12,239 [INFO] obsidian: Autonomous fix applied successfully: Routing fix applied successfully
 2026-07-09 20:17:12,240 [INFO] obsidian: Query done | category=order_status action=allow blocked=False cost_total=0.02354 budget_remaining=0.97646
+2026-07-09 20:58:19,007 [INFO] obsidian: Received query: 'hello'
+2026-07-09 20:58:19,008 [INFO] obsidian: Category: general_faq
+2026-07-09 20:58:19,246 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-09 20:58:19,257 [INFO] obsidian: Query done | category=general_faq action=allow blocked=False cost_total=0.02388 budget_remaining=0.97612
