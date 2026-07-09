@@ -381,7 +381,7 @@ async def _ask_groq_with_context(query: str) -> str:
             f"  {cat}: {s['count']} queries, "
             f"total=${s['total_cost']:.5f}, avg=${avg:.5f}/query, "
             f"blocked={s['blocked']}"
-        )
+        )   
 
     context = "\n".join(lines)
 
