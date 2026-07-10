@@ -9,6 +9,7 @@ import chalk from 'chalk';
 import { spawn } from 'cross-spawn';
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
+import open from 'open';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -165,7 +166,7 @@ function launchDashboard() {
   };
   line.setData([series1]);
 
-  const log = grid.set(6, 0, 6, 12, contrib.log, { 
+  const log = grid.set(6, 0, 4, 12, contrib.log, { 
     fg: "green", 
     selectedFg: "green", 
     label: 'Audit Log'
@@ -174,10 +175,52 @@ function launchDashboard() {
   log.log("Dashboard loaded.");
   log.log("Waiting for events...");
 
-  screen.key(['escape', 'q', 'C-c'], function(ch, key) {
+  const input = grid.set(10, 0, 2, 12, blessed.textbox, {
+    label: ' Live Query Input (Press Enter to submit) ',
+    inputOnFocus: true,
+    keys: true,
+    style: {
+      fg: 'white',
+      bg: 'black',
+      border: { fg: '#f0f0f0' },
+      focus: { border: { fg: 'green' } }
+    }
+  });
+
+  input.on('submit', async (value) => {
+    if (!value.trim()) {
+      input.clearValue();
+      input.focus();
+      screen.render();
+      return;
+    }
+    
+    log.log(`> [Query] ${value}`);
+    input.clearValue();
+    screen.render();
+
+    try {
+      const res = await fetch('http://localhost:8000/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: value })
+      });
+      const data = await res.json();
+      log.log(`< [Response] ${data.response}`);
+    } catch (err) {
+      log.log(`! [Error] ${err.message}`);
+    }
+
+    input.focus();
+    screen.render();
+  });
+
+  screen.key(['escape', 'C-c'], function(ch, key) {
     return process.emit('SIGINT');
   });
 
+  // Keep input focused
+  input.focus();
   screen.render();
 }
 

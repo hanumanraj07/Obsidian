@@ -55,7 +55,6 @@ export default function SessionPage() {
   const blockedQueries = events.filter(e => e.audit_event.action === "stop").length;
 
   return (
-  return (
     <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: "24px", maxWidth: "800px", margin: "0 auto" }}>
       {/* Header */}
       <div className="section-header" style={{ marginBottom: 0 }}>

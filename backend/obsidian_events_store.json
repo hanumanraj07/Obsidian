@@ -1,5 +1,5 @@
 {
-  "total": 68,
+  "total": 71,
   "events": [
     {
       "timestamp_ms": 1783358302382.2996,
@@ -1673,6 +1673,84 @@
           "max": 1.0,
           "remaining": 0.0
         }
+      }
+    },
+    {
+      "timestamp_ms": 1783662744526.9421,
+      "category": "order_status",
+      "agent_id": "default",
+      "audit_event": {
+        "action": "allow",
+        "reason": "enforce",
+        "model": "llama-3.3-70b-versatile",
+        "run_id": "e6576487c1f8",
+        "mode": "enforce",
+        "step": 1,
+        "timestamp_ms": 1783662744526.9421,
+        "tool_calls_total": 0,
+        "cost_total": 0.0016275,
+        "latency_used_ms": 2078.9999999997235,
+        "energy_used": 271.0,
+        "budget_state": {
+          "max": 1.0,
+          "remaining": 0.9983725
+        },
+        "query": "Where is my order #12345?",
+        "applied": true,
+        "decision_mode": "enforce",
+        "agent_id": "default"
+      }
+    },
+    {
+      "timestamp_ms": 1783663047596.0842,
+      "category": "order_status",
+      "agent_id": "default",
+      "audit_event": {
+        "action": "allow",
+        "reason": "enforce",
+        "model": "llama-3.3-70b-versatile",
+        "run_id": "e6576487c1f8",
+        "mode": "enforce",
+        "step": 2,
+        "timestamp_ms": 1783663047596.0842,
+        "tool_calls_total": 0,
+        "cost_total": 0.0042450000000000005,
+        "latency_used_ms": 3547.999999998865,
+        "energy_used": 688.0,
+        "budget_state": {
+          "max": 1.0,
+          "remaining": 0.995755
+        },
+        "query": "where is my order",
+        "applied": true,
+        "decision_mode": "enforce",
+        "agent_id": "default"
+      }
+    },
+    {
+      "timestamp_ms": 1783663093050.2566,
+      "category": "general_faq",
+      "agent_id": "default",
+      "audit_event": {
+        "action": "allow",
+        "reason": "enforce",
+        "model": "llama-3.3-70b-versatile",
+        "run_id": "e6576487c1f8",
+        "mode": "enforce",
+        "step": 3,
+        "timestamp_ms": 1783663093050.2566,
+        "tool_calls_total": 0,
+        "cost_total": 0.007380000000000001,
+        "latency_used_ms": 5781.999999997424,
+        "energy_used": 1187.0,
+        "budget_state": {
+          "max": 1.0,
+          "remaining": 0.99262
+        },
+        "query": "hello what is your work and how can you help me",
+        "applied": true,
+        "decision_mode": "enforce",
+        "agent_id": "default"
       }
     }
   ]
